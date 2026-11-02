@@ -1,0 +1,5 @@
+vendor/
+gen/
+.venv/
+build/
+.DS_Store
