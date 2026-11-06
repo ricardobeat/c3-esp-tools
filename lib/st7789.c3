@@ -1,13 +1,14 @@
-// ST7789 TFT over bit-banged SPI (mode 0, MSB first). Slow, but it needs no
-// SPI peripheral, clock gating or DMA, so it works the moment the pins do.
+// ST7789 TFT on the SPI bus (esp32::spibus). CS and DC are GPIOs; the bus must
+// already be initialised.
 module esp32::st7789;
-import esp32::pin, esp32::rom;
+import esp32::pin, esp32::rom, esp32::spibus;
 
 struct Display
 {
-	uint sclk, mosi, cs, dc, bl;   // GPIO numbers
+	uint cs, dc, bl;        // GPIO numbers
 	uint width, height;
 	bool invert;
+	uint hz;                // SPI clock for this device
 }
 
 fn uint rgb(uint r, uint g, uint b) @inline
@@ -15,38 +16,30 @@ fn uint rgb(uint r, uint g, uint b) @inline
 	return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
 }
 
-fn void Display.write_byte(&self, uint b)
-{
-	for (int i = 7; i >= 0; i--)
-	{
-		pin::set(self.mosi, ((b >> i) & 1) != 0);
-		pin::high(self.sclk);
-		pin::low(self.sclk);
-	}
-}
-
 fn void Display.cmd(&self, uint c)
 {
+	spibus::configure(self.hz, 0);
 	pin::low(self.dc);
 	pin::low(self.cs);
-	self.write_byte(c);
+	spibus::write_byte((char)c);
 	pin::high(self.cs);
 }
 
 fn void Display.data(&self, uint d)
 {
+	spibus::configure(self.hz, 0);
 	pin::high(self.dc);
 	pin::low(self.cs);
-	self.write_byte(d);
+	spibus::write_byte((char)d);
 	pin::high(self.cs);
 }
 
 fn void Display.init(&self)
 {
-	uint[5] pins = { self.sclk, self.mosi, self.cs, self.dc, self.bl };
-	foreach (p : pins) pin::output(p);
+	pin::output(self.cs);
+	pin::output(self.dc);
+	pin::output(self.bl);
 	pin::high(self.cs);
-	pin::low(self.sclk);
 
 	self.cmd(0x01);              // software reset
 	rom::delay_ms(150);
@@ -80,12 +73,22 @@ fn void Display.fill_rect(&self, uint x, uint y, uint w, uint h, uint color)
 	if (x + w > self.width) w = self.width - x;
 	if (y + h > self.height) h = self.height - y;
 	self.window(x, y, x + w - 1, y + h - 1);
+
+	// One SPI transaction carries up to 32 pixels, so build that once.
+	char[64] chunk;
+	for (uint i = 0; i < 64; i += 2)
+	{
+		chunk[i] = (char)(color >> 8);
+		chunk[i + 1] = (char)(color & 0xFF);
+	}
+	spibus::configure(self.hz, 0);
 	pin::high(self.dc);
 	pin::low(self.cs);
-	for (uint n = w * h; n > 0; n--)
+	for (uint left = w * h; left > 0;)
 	{
-		self.write_byte(color >> 8);
-		self.write_byte(color & 0xFF);
+		uint n = left > 32 ? 32 : left;
+		spibus::write(chunk[:n * 2]);
+		left -= n;
 	}
 	pin::high(self.cs);
 }

@@ -1,0 +1,3 @@
+source  https://github.com/espressif/esp-idf
+tag     v6.1
+commit  fff9895c82d744c7237be8847347bdd1b07c6643

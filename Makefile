@@ -15,7 +15,7 @@ PORT   ?= $(firstword $(wildcard /dev/cu.usbserial-* /dev/cu.usbmodem*))
 BAUD   ?= 460800
 PY     := .venv/bin/python
 
-ROMLD  := vendor/esp-idf/components/esp_rom/esp32c5/ld
+ROMLD  := third_party/esp-idf/ld
 B      := build/$(EX)
 SRCS   := $(wildcard lib/*.c3) $(wildcard gen/*.c3) $(wildcard examples/$(EX)/*.c3)
 
@@ -25,7 +25,7 @@ C3FLAGS := --target freertos-riscv32 --use-stdlib=no --no-entry --single-module=
            --riscv-cpu=rvimac --riscv-abi=int-only --reloc=none -Os --safe=no
 ASFLAGS := --target=riscv32-unknown-elf -march=rv32imac_zicsr_zifencei -mabi=ilp32 -mno-relax
 
-.PHONY: all flash monitor clean
+.PHONY: all flash monitor test clean
 all: $(B)/app.bin
 
 $(B)/crt0.o: rt/crt0.S
@@ -52,6 +52,13 @@ flash: $(B)/app.bin
 
 monitor:
 	$(PY) -m serial.tools.miniterm $(PORT) 115200
+
+# Host-side tests of the pure-logic parts (native build, runs on this machine).
+test:
+	@mkdir -p build
+	$(C3C) compile tests/clock.c3 lib/mmio.c3 lib/pin.c3 lib/spibus.c3 \
+	    gen/spi.c3 gen/pcr.c3 gen/gpio.c3 gen/io_mux.c3 -o build/clock_test 2>&1 | grep -E 'error' -A3 || true
+	@build/clock_test
 
 clean:
 	rm -rf build

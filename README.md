@@ -16,30 +16,40 @@ Needs `c3c` built from the `freertos-riscv32` branch of
 ```sh
 ./init.sh                  # once
 make EX=uart flash monitor
-make EX=lcd  flash         # NM-CYD-C5 display test
+make EX=spi  flash monitor # SPI self-test, needs no wiring
+make EX=lcd  flash         # NM-CYD-C5 display and touch
+make test                  # host-side checks of the pure-logic parts
 ```
 
-`init.sh` sparse-clones ESP-IDF (`components/soc`, `esp_rom` and a memory map,
-about 13 MB, no toolchain, no submodules), creates `.venv` with `esptool`, and
-runs `scripts/gen_soc.py` to turn IDF's C register headers into C3 constants
-under `gen/`. `./init.sh --idf PATH` links an existing checkout instead.
+`init.sh` checks the tools and creates `.venv` with `esptool`. It needs no
+ESP-IDF checkout: what this project takes from IDF is committed, namely the
+register bindings in `gen/` and the ROM symbol tables in `third_party/esp-idf/`
+(Apache-2.0, revision in `REVISION`).
+
+To update them, `./init.sh --regen` sparse-clones ESP-IDF (about 13 MB, no
+toolchain, no submodules) and reruns `scripts/gen_soc.py`, which turns IDF's C
+register headers into C3 constants. `--idf PATH` uses an existing checkout.
 
 ## Examples
 
 | `EX=` | What it does |
 |---|---|
 | `uart` | Banner, echo of anything you type, a tick every second. Also calls a ROM function and uses `tlocal` variables. |
-| `lcd` | Colour bars, grey ramp and a block "C3" on the NM-CYD-C5's ST7789, over bit-banged SPI. Pins are board-specific (see `examples/lcd/main.c3`). |
+| `spi` | Loopback self-test of the SPI driver: MOSI is routed back to MISO inside the chip, so no wiring is needed. Checks several clock rates and transfer lengths and prints PASS or FAIL. |
+| `lcd` | Colour bars, grey ramp and a block "C3" on the NM-CYD-C5's ST7789, then touch the screen to paint (XPT2046). Pins are board-specific (see `examples/lcd/main.c3`). |
 
 ## Layout
 
 ```
-init.sh            fetch ESP-IDF parts, esptool, generate bindings
+init.sh            check tools, set up esptool; --regen refreshes gen/ from ESP-IDF
 Makefile           build / flash / monitor
 rt/crt0.S          entry: sp, gp, .bss, TLS block + tp, trap vector -> c3_main
 ld/esp32c5.ld      SRAM-only memory map; includes IDF's ROM symbol tables
-lib/               mmio, rom, wdt, console (UART0), pin (GPIO), st7789, trap
-gen/               generated: esp32c5::uart, ::gpio, ::io_mux, ::timg, ...
+lib/               mmio, rom, wdt, console (UART0), pin (GPIO + matrix routing),
+                   spibus (SPI2 master), st7789, xpt2046, trap
+tests/             host-side tests (make test)
+gen/               generated from IDF: esp32c5::uart, ::gpio, ::io_mux, ::timg, ...
+third_party/       ROM symbol tables and licence from ESP-IDF, with its revision
 examples/          one directory per program, each defines c3_main
 ```
 
@@ -47,6 +57,20 @@ Registers are used like `mmio::write(uart::FIFO_REG, c)`, with names from
 IDF's headers minus the peripheral prefix (`UART_FIFO_REG` is `uart::FIFO_REG`).
 Registers that exist once per instance come out for instance 0, with a `STRIDE`
 constant to reach the others.
+
+## SPI
+
+`lib/spibus.c3` drives the general-purpose SPI2 peripheral: polled, no DMA, no
+interrupts, 64 bytes per transaction with longer transfers split up. It enables
+the peripheral in PCR, clocks it from the 48 MHz crystal through a divider of 2
+(so the fastest SPI clock is 24 MHz, then 12, 8, 6, ... MHz), and routes its pads
+through the GPIO matrix. Chip select is a plain GPIO that the caller drives, so
+one bus serves devices with different clocks and modes: `spibus::configure(hz,
+mode)` before each device. The clock-divider search follows ESP-IDF's
+`spi_ll_master_cal_clock`.
+
+`make test` checks that divider search on the host. The driver itself needs the
+board: `make EX=spi flash monitor`.
 
 ## How it boots
 
@@ -74,6 +98,5 @@ The library prints numbers itself, and the build passes `--safe=no`.
 
 - `make flash` writes `0x2000`, replacing the bootloader. To go back to
   Arduino or ESP-IDF, flash them again; they rewrite it.
-- The display test bit-bangs SPI (about a second per full-screen fill). The
-  SPI peripheral, DMA, PSRAM and interrupts are not set up.
+- SPI is polled. DMA, PSRAM and interrupts are not set up.
 - Only the ESP32-C5 is supported, and only tested on the NM-CYD-C5 board.
